@@ -1,6 +1,6 @@
 import { useApolloClient } from "@apollo/client/react"
-import { Link, useLocation } from "@tanstack/react-router"
-import { CheckSquare, Edit3, Layers, ListPlus, MoveUpRight, Trash2, X } from "lucide-react"
+import { Link, useLocation, useNavigate } from "@tanstack/react-router"
+import { CheckSquare, Edit3, Eye, Layers, ListPlus, MoveUpRight, Trash2, X } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { EmptyState } from "../../components/card-image"
 import { addToDeckAction, addToListAction, CardTile } from "../../components/card-tile"
@@ -10,7 +10,7 @@ import {
 } from "../../components/fullscreen-printing-dialog"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
-import { useCardSize } from "../../lib/card-size"
+import { CARD_WIDTH_DEFAULT_REM, cardSizeFromWidthRem, useCardSize } from "../../lib/card-size"
 import { collectionCardReturnSearch, invalidateCollectionViews } from "./collection-navigation"
 import { CARD_TILE_GAP } from "./constants"
 import {
@@ -348,6 +348,7 @@ export function VirtualizedCollectionGrid({
   onToggleForTrade,
   onToggleSelected,
   pendingForTradePrintingIds,
+  responsive = false,
   selectionActive = false,
 }: {
   forTradeQuantityOverrides?: Record<string, number>
@@ -359,11 +360,14 @@ export function VirtualizedCollectionGrid({
   onToggleForTrade?: (group: CollectionItemGroup) => void
   onToggleSelected?: (group: CollectionItemGroup, selectRange?: boolean) => void
   pendingForTradePrintingIds?: Set<string>
+  /** Fit three default-sized columns into split-screen collection views. */
+  responsive?: boolean
   selectionActive?: boolean
 }) {
   const size = useCardSize()
   const containerRef = useRef<HTMLDivElement>(null)
   const [columns, setColumns] = useState(1)
+  const [cardWidthPx, setCardWidthPx] = useState(size.widthPx)
   const [range, setRange] = useState({ startRow: 0, endRow: 8 })
   const [previewPrintingId, setPreviewPrintingId] = useState<string | null>(null)
   const previewPrintings = useMemo(() => groups.map(fullscreenPrinting), [groups])
@@ -374,14 +378,31 @@ export function VirtualizedCollectionGrid({
 
     const updateColumns = () => {
       const width = container.getBoundingClientRect().width
-      setColumns(Math.max(1, Math.floor((width + CARD_TILE_GAP) / (size.widthPx + CARD_TILE_GAP))))
+      const responsiveScale = size.widthRem / CARD_WIDTH_DEFAULT_REM
+      const splitScreenWidth = Math.max(
+        16 * 16 * responsiveScale,
+        ((width - 2 * CARD_TILE_GAP) / 3) * responsiveScale,
+      )
+      const columnTarget = responsive ? Math.min(size.widthPx, splitScreenWidth) : size.widthPx
+      const nextColumns = Math.max(
+        1,
+        Math.floor((width + CARD_TILE_GAP) / (columnTarget + CARD_TILE_GAP)),
+      )
+      setColumns(nextColumns)
+      setCardWidthPx(
+        responsive && width > 0
+          ? Math.min(size.widthPx, (width - (nextColumns - 1) * CARD_TILE_GAP) / nextColumns)
+          : size.widthPx,
+      )
     }
 
     updateColumns()
     const resizeObserver = new ResizeObserver(updateColumns)
     resizeObserver.observe(container)
     return () => resizeObserver.disconnect()
-  }, [size.widthPx])
+  }, [responsive, size.widthPx, size.widthRem])
+
+  const rowHeightPx = cardSizeFromWidthRem(cardWidthPx / 16).rowHeightPx
 
   useEffect(() => {
     const scrollParent = document.querySelector(".app-shell-main")
@@ -396,14 +417,11 @@ export function VirtualizedCollectionGrid({
 
         const rect = container.getBoundingClientRect()
         const viewportHeight = window.innerHeight
-        const overscan = size.rowHeightPx * 3
+        const overscan = rowHeightPx * 3
         const visibleTop = Math.max(0, -rect.top - overscan)
-        const visibleBottom = Math.min(
-          rowCount * size.rowHeightPx,
-          viewportHeight - rect.top + overscan,
-        )
-        const startRow = Math.max(0, Math.floor(visibleTop / size.rowHeightPx))
-        const endRow = Math.max(startRow + 1, Math.ceil(visibleBottom / size.rowHeightPx))
+        const visibleBottom = Math.min(rowCount * rowHeightPx, viewportHeight - rect.top + overscan)
+        const startRow = Math.max(0, Math.floor(visibleTop / rowHeightPx))
+        const endRow = Math.max(startRow + 1, Math.ceil(visibleBottom / rowHeightPx))
 
         setRange({ startRow, endRow })
       })
@@ -418,10 +436,10 @@ export function VirtualizedCollectionGrid({
       scrollTarget.removeEventListener("scroll", updateRange)
       window.removeEventListener("resize", updateRange)
     }
-  }, [columns, groups.length, size.rowHeightPx])
+  }, [columns, groups.length, rowHeightPx])
 
   const rowCount = Math.ceil(groups.length / columns)
-  const totalHeight = Math.max(0, rowCount * size.rowHeightPx - CARD_TILE_GAP)
+  const totalHeight = Math.max(0, rowCount * rowHeightPx - CARD_TILE_GAP)
   const startIndex = range.startRow * columns
   const endIndex = Math.min(groups.length, range.endRow * columns)
   const visibleGroups = groups.slice(startIndex, endIndex)
@@ -446,8 +464,8 @@ export function VirtualizedCollectionGrid({
       <div
         className="grid justify-center gap-x-6 gap-y-8"
         style={{
-          gridTemplateColumns: `repeat(auto-fill, minmax(min(${size.widthRem}rem, 100%), ${size.widthRem}rem))`,
-          transform: `translateY(${range.startRow * size.rowHeightPx}px)`,
+          gridTemplateColumns: `repeat(auto-fill, minmax(min(${cardWidthPx}px, 100%), ${cardWidthPx}px))`,
+          transform: `translateY(${range.startRow * rowHeightPx}px)`,
         }}
       >
         {visibleGroups.map((group) => (
@@ -529,8 +547,10 @@ const CollectionItemTile = memo(function CollectionItemTile({
   const [bulkEditTarget, setBulkEditTarget] = useState<CollectionItem[] | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<CollectionItem[] | null>(null)
   const { pathname } = useLocation()
+  const navigate = useNavigate()
   const cardReturnSearch = collectionCardReturnSearch(pathname)
   const item = group.items[0]
+  const cardId = item.printing?.card?.id
 
   function refreshCollection() {
     void invalidateCollectionViews(client, item.location?.id)
@@ -592,6 +612,18 @@ const CollectionItemTile = memo(function CollectionItemTile({
         primaryActionLabel={`Open ${item.printing?.card?.name || "card"} full screen`}
         primaryActionRole="button"
         menuActions={[
+          {
+            disabled: !cardId,
+            icon: <Eye className="h-4 w-4" />,
+            label: "View card",
+            onClick: () =>
+              cardId &&
+              void navigate({
+                to: "/cards/$id",
+                params: { id: cardId },
+                search: cardReturnSearch,
+              }),
+          },
           hasMixedFinishes
             ? {
                 disabled: true,
@@ -600,7 +632,7 @@ const CollectionItemTile = memo(function CollectionItemTile({
               }
             : addToDeckAction({
                 onClick: () => setDeckTarget(group.items),
-                disabled: !item.printing?.card?.id,
+                disabled: !cardId,
               }),
           addToListAction({ onClick: () => setListTarget(group.items) }),
         ]}

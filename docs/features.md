@@ -174,6 +174,24 @@ Collection workflows include:
 Auto-sort type filters and deck type grouping use a permanent's front-face type,
 not its adventure, prepared spell, or back face. Split spells retain both types.
 
+### Dragging cards in
+
+Dragging a card image or link onto a deck, a collection view, or the want
+list from another page covers the page with drop zones: **Mainboard** and
+**Considering** on a deck, one zone drawn as the open location on a location
+page (the unfiled pile on the collection overview), and one **Wants** zone on
+the want list. Dropping adds one copy: a near-mint collection item in that
+location, a deck card in that zone, or a want (pinned to the dropped printing
+when **Choose printing** is on).
+
+The card is read from what the browser hands over: the Scryfall printing ID in
+a Scryfall, EDHREC, or ManaVault image URL, the set and collector number in a
+Scryfall card link, or else the card name in the image's alt text, the link
+text, or dragged text. Moxfield images carry only the name, so a Moxfield drop
+gets the card's newest nonfoil, non-promo printing. Dropped cards take the
+nonfoil finish when the printing has one. Drags that start on the page itself
+are ignored, so cards already shown there are not re-added.
+
 ### Collection check
 
 **Check a list** on the collection page takes a pasted card/deck list or a
@@ -277,6 +295,10 @@ Deck workflows include:
   its cover, holding its most valuable cards, with the commander's colors stuck
   on as mana stickers
 - import and export decklists (import straight into a zone, or into select mode)
+- drag and drop: drag a card image or link from Scryfall, EDHREC, Moxfield,
+  another ManaVault tab, or a dialog over the deck onto the page, and drop it
+  on the **Mainboard** or **Considering** zone (see
+  [Dragging cards in](#dragging-cards-in))
 - mainboard/commander/considering zones - a segmented Mainboard/Considering
   toggle (plus Commander for Commander decks) picks the zone when adding or
   moving cards. Considering replaced the old sideboard and maybeboard zones;
@@ -316,9 +338,17 @@ Deck workflows include:
   and catalog checks but stay out of the Ask AI history.
 - **Compare decklist** - diff an external list against the open deck as adds,
   cuts, and quantity changes (see [Trade](#trade) for supported sources)
-- **Link external deck** - attach a public Moxfield or Archidekt deck URL from
-  the deck actions menu. Linking imports that list (replacing the current
-  cards) and keeps it in sync every hour; the header shows the last sync time
+- **Link external deck** - paste a public Moxfield or Archidekt deck URL into
+  the External deck section of the Edit deck dialog and turn on its switch;
+  pasting alone links nothing. After a confirmation, linking imports that list
+  (replacing the current cards) and keeps it in sync every hour. Turning the
+  switch off unlinks the deck and keeps its current cards. Archived decks
+  must be unarchived first. The New deck dialog has the same switch (its URL
+  box opens once the switch is on, and it is unavailable for the Archived
+  status): with it on, the deck is created only after the external deck is
+  fetched, so a failed fetch creates nothing. A typed name is used as is;
+  leave the name blank to use the external deck's name. The
+  header shows the last sync time
   and a **Sync now** button, and failed syncs leave the last good list in
   place with the error shown. While linked, every decklist edit (add, swap,
   import, move, tag, printing, commander, delete, EDHREC/Recommander adds) is
@@ -532,14 +562,16 @@ The Trade tab connects owned inventory to trading with other players:
   each tile that marks a collection item (and quantity) up for trade, plus
   sorting, filters, an only-for-trade filter, and a flagged count. Items stored
   in list-kind locations never count as tradable copies.
-- **Wants** - a card-search-backed want list with quantities. Wants are
+- **Wants** - a card-search-backed want list with quantities and prices
+  (from the cheapest known printing or the pinned printing). Wants are
   either generic ("any printing") or pinned to an exact printing via the
   opt-in printing picker or the **Add to wants** action on a card detail
-  printing.
+  printing, and click through to the card detail page. Cards can also be
+  dragged in from other sites (see [Dragging cards in](#dragging-cards-in)).
 - **Matches** - paste list text or a supported link, declare whether the
   list is the partner's haves or wants, and see the overlap: cards you have
   up for trade that they want, or cards they have that are on your want
-  list. Unrecognized lines are reported.
+  list, with prices and links to each card. Unrecognized lines are reported.
 
 Deck detail pages additionally offer a **Compare decklist** action that diffs
 an external list against the open deck as adds, cuts, and quantity changes
@@ -581,8 +613,10 @@ through a bearer link:
 
 - `/share/decks/...` - read-only deck view with copy, export, and playtest
   actions, plus a generated preview image for link unfurls
-- `/share/wants/...` - the want list
-- `/share/binder/...` - each for-trade printing with finish and condition
+- `/share/wants/...` - the want list, with prices and a read-only card detail
+  dialog on click
+- `/share/binder/...` - each for-trade printing with finish, condition, price,
+  and a read-only card detail dialog on click
 
 Share pages offer copy-to-clipboard (with a plain-http fallback) and `.txt`
 download as standard decklist text, ready to paste into any ManaVault Matches

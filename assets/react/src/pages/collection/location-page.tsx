@@ -23,6 +23,7 @@ import { cn, pluralize, present } from "../../lib/utils"
 import { AutoSortSetupDialog, hasEnabledAutoSortRules } from "./auto-sort-setup-dialog"
 import { AutoSortSummaryDialog } from "./auto-sort-summary-dialog"
 import { AutoSortCollectionDocument } from "./auto-sort/documents"
+import { CollectionCardDrop } from "./collection-card-drop"
 import { invalidateCollectionViews } from "./collection-navigation"
 import { COLLECTION_PAGE_SIZE, DEFAULT_COLLECTION_SORT } from "./constants"
 import { ExportCollectionDialog } from "./export/collection-export-dialog"
@@ -308,18 +309,25 @@ export function LocationPage({ id }: { id: string }) {
         className={cn(
           "control-toolbar mb-7 grid gap-2 rounded-box border border-base-300 bg-base-100 p-4 shadow-sm",
           isUnfiledLocation(location)
-            ? "sm:grid-cols-[1fr_auto_auto_auto_auto_auto]"
-            : "sm:grid-cols-[1fr_auto_auto_auto_auto]",
+            ? "sm:grid-cols-2 min-[70rem]:grid-cols-[1fr_auto_auto_auto_auto_auto]"
+            : "sm:grid-cols-2 min-[56rem]:grid-cols-[1fr_auto_auto_auto_auto]",
         )}
       >
-        <CardNameSearchField
-          name="q"
-          value={q}
-          onValueChange={updateLocationSearchDraft}
-          onClear={clearLocationSearch}
-          onSuggestionSelect={applyLocationSearch}
-          placeholder="Filter location"
-        />
+        <div
+          className={cn(
+            "sm:col-span-2",
+            isUnfiledLocation(location) ? "min-[70rem]:col-span-1" : "min-[56rem]:col-span-1",
+          )}
+        >
+          <CardNameSearchField
+            name="q"
+            value={q}
+            onValueChange={updateLocationSearchDraft}
+            onClear={clearLocationSearch}
+            onSuggestionSelect={applyLocationSearch}
+            placeholder="Filter location"
+          />
+        </div>
         <SortDropdown sort={sort} onSortChange={setSort} />
         <Button
           type="button"
@@ -393,11 +401,13 @@ export function LocationPage({ id }: { id: string }) {
               isSelected={selection.isSelected}
               onLoadMore={loadMore}
               onToggleSelected={selection.toggleItem}
+              responsive
               selectionActive={selection.selectionActive}
             />
           </PageSection>
         </div>
       )}
+      <CollectionCardDrop location={location} />
       <AutoSortSetupDialog open={isAutoSortSetupOpen} onOpenChange={setIsAutoSortSetupOpen} />
       <AutoSortSummaryDialog
         open={Boolean(autoSortResult)}
