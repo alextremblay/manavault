@@ -21,6 +21,9 @@ type DeckDetailCardCollectionsProps = {
   onAddPartner: (deckCard: DeckCardEntry) => void
   onAllocate: (deckCard: DeckCardEntry, collectionItemId: string) => void
   onAssignTag: (deckCard: DeckCardEntry, tagId: string) => void
+  onBulkEditConsidering: () => void
+  onBulkMoveConsidering: () => void
+  onBulkDeleteConsidering: () => void
   onDeallocate: (deckCard: DeckCardEntry, collectionItemId: string) => void
   onDelete: (deckCard: DeckCardEntry) => void
   onEdit: (deckCard: DeckCardEntry) => void
@@ -50,6 +53,9 @@ export function DeckDetailCardCollections({
   onAddPartner,
   onAllocate,
   onAssignTag,
+  onBulkEditConsidering,
+  onBulkMoveConsidering,
+  onBulkDeleteConsidering,
   onDeallocate,
   onDelete,
   onEdit,
@@ -107,6 +113,9 @@ export function DeckDetailCardCollections({
           highlightedCardIds={highlightedCardIds}
           isSelecting={canEditDecklist && isSelecting}
           isUpdating={isUpdating}
+          onBulkEdit={onBulkEditConsidering}
+          onBulkMove={onBulkMoveConsidering}
+          onBulkDelete={onBulkDeleteConsidering}
           onDelete={onDelete}
           onEdit={onEdit}
           onMove={onMove}

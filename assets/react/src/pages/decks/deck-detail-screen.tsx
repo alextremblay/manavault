@@ -320,6 +320,18 @@ export function DeckDetailScreen({
     cardActions.deleteError ||
     allocationActions.allocationError ||
     disassemblyActions.error
+  const consideringCardIds = new Set(consideringCards.map((deckCard) => deckCard.id))
+  const isConsideringOnlySelection =
+    selection.selectedDeckCardIdList.length > 0 &&
+    selection.selectedDeckCardIdList.every((deckCardId) => consideringCardIds.has(deckCardId))
+
+  function selectConsideringCards() {
+    bulkActions.clearError()
+    cardActions.clearTagError()
+    selection.clearSelectedDeckCards()
+    selection.selectDeckCardIds(consideringCards.map((deckCard) => deckCard.id))
+    selection.setIsSelectingCards(true)
+  }
 
   return (
     <>
@@ -398,7 +410,11 @@ export function DeckDetailScreen({
 
           {!shareMode && canEditDecklist && selection.isSelectionActive ? (
             <DeckDetailSelectionBar
-              allSelected={selection.allDeckCardsSelected}
+              allSelected={
+                isConsideringOnlySelection
+                  ? selection.selectedDeckCardCount === consideringCards.length
+                  : selection.allDeckCardsSelected
+              }
               bulkQuantity={selection.bulkQuantity}
               error={bulkActions.error || cardActions.tagError}
               isPending={isUpdatingDeckCard}
@@ -414,7 +430,9 @@ export function DeckDetailScreen({
               onDelete={() => setOverlay({ kind: "delete-selected" })}
               onOpenSelectFromList={() => setOverlay({ kind: "select-from-list" })}
               onQuantityChange={selection.setBulkQuantity}
-              onSelectAll={selection.selectAllDeckCards}
+              onSelectAll={
+                isConsideringOnlySelection ? selectConsideringCards : selection.selectAllDeckCards
+              }
               onTag={(tag) => {
                 if (!selection.selectedDeckCardIdList.length) return
                 bulkActions.clearError()
@@ -431,7 +449,7 @@ export function DeckDetailScreen({
               }}
               selectedAllocatedCount={selectedAllocatedDeckCardCount}
               selectedCount={selection.selectedDeckCardCount}
-              totalCount={deckCards.length}
+              totalCount={isConsideringOnlySelection ? consideringCards.length : deckCards.length}
             />
           ) : null}
 
@@ -451,6 +469,18 @@ export function DeckDetailScreen({
               allocationActions.allocate(deckCard.id, collectionItemId)
             }
             onAssignTag={cardActions.assignDeckCardTag}
+            onBulkEditConsidering={selectConsideringCards}
+            onBulkMoveConsidering={() => {
+              selectConsideringCards()
+              bulkActions.update(
+                consideringCards.map((deckCard) => deckCard.id),
+                { zone: "mainboard" },
+              )
+            }}
+            onBulkDeleteConsidering={() => {
+              selectConsideringCards()
+              setOverlay({ kind: "delete-selected" })
+            }}
             onDeallocate={(deckCard, collectionItemId) =>
               allocationActions.deallocate(deckCard.id, collectionItemId)
             }

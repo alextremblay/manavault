@@ -122,6 +122,28 @@ docker compose up -d
 
 ## Building Your Own Image
 
+### Download a manually triggered build
+
+Once the updated workflow is on the default branch, open **Actions -> Container ->
+Run workflow**, choose the branch or tag to build, and start the run. The selected
+ref must also contain the updated workflow. Manual runs upload an image artifact
+instead of publishing to GHCR; pushes to `main` and version tags still publish
+normally.
+
+After the run succeeds, download **manavault-linux-amd64** from its **Artifacts**
+section and extract the downloaded ZIP. Artifacts are retained for seven days.
+The image targets Linux amd64 (x86-64); Apple Silicon requires amd64 emulation.
+
+```sh
+sha256sum -c manavault-linux-amd64.tar.gz.sha256
+docker load -i manavault-linux-amd64.tar.gz
+```
+
+On macOS, use `shasum -a 256 -c` instead of `sha256sum -c`. Use the loaded image
+`manavault:manual` in place of `manavault` in the run command below.
+
+### Build locally
+
 Build and run a local image:
 
 ```sh
