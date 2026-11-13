@@ -126,6 +126,9 @@ export function DeckZoneTable({
   highlightedCardIds,
   isUpdating,
   onDelete,
+  onBulkEdit,
+  onBulkMove,
+  onBulkDelete,
   onEdit,
   onMove,
   onPreview,
@@ -143,6 +146,9 @@ export function DeckZoneTable({
   isSelecting: boolean
   isUpdating: boolean
   onDelete: (deckCard: DeckCardEntry) => void
+  onBulkEdit: () => void
+  onBulkMove: () => void
+  onBulkDelete: () => void
   onEdit: (deckCard: DeckCardEntry) => void
   onMove: (deckCard: DeckCardEntry) => void
   onPreview: (deckCard: DeckCardEntry) => void
@@ -170,6 +176,46 @@ export function DeckZoneTable({
         </span>
         <ChevronDown className="h-4 w-4 text-base-content/50 transition group-open:rotate-180" />
       </summary>
+
+      {canEdit && !shareMode ? (
+        <div
+          aria-label={`Bulk actions for ${title}`}
+          role="group"
+          className="flex flex-wrap items-center gap-2 border-t border-base-300 px-4 py-2"
+        >
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={isUpdating}
+            onClick={onBulkEdit}
+          >
+            <Edit3 className="h-4 w-4" />
+            Edit all
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={isUpdating}
+            onClick={onBulkMove}
+          >
+            <MoveRight className="h-4 w-4" />
+            Move all to Mainboard
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="text-error hover:bg-error/10"
+            disabled={isUpdating}
+            onClick={onBulkDelete}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete all
+          </Button>
+        </div>
+      ) : null}
 
       <div className="overflow-x-auto border-t border-base-300">
         <table className="table table-sm">
