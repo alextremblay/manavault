@@ -103,7 +103,7 @@ function SetupNotice() {
       <Sparkles className="h-6 w-6 text-base-content/30" aria-hidden="true" />
       <p className="text-sm font-bold">Connect an AI provider to chat about swaps</p>
       <p className="max-w-64 text-xs text-base-content/60">
-        Add an API key and model in Settings. Deck data is only sent when you ask.
+        Choose a provider and model in Settings. Deck data is only sent when you ask.
       </p>
       <Button asChild size="sm" variant="outline">
         <Link to="/settings">Open Settings</Link>
@@ -141,7 +141,9 @@ export function DeckSwapChat({
   const pending = turns.some((turn) => turn.status === "pending")
   const { startPolling, stopPolling } = threadQuery
   const aiSettings = settingsQuery.data?.aiSettings
-  const configured = Boolean(aiSettings?.hasApiKey && aiSettings.model)
+  const configured = Boolean(
+    aiSettings?.model && (aiSettings.provider === "openai-compatible" || aiSettings.hasApiKey),
+  )
 
   useEffect(() => {
     if (pending) startPolling(POLL_INTERVAL_MS)

@@ -339,6 +339,85 @@ fn game_changer_commander() -> Value {
 // Deck analysis.
 
 #[tokio::test]
+async fn analyzes_with_a_local_openai_compatible_server_without_openrouter_fields_or_key() {
+    let server = MockServer::start().await;
+    let app = TestApp::new().await;
+    insert_settings(&app, "local-model", None).await;
+    let base_url = format!("{}/local/v1", server.uri());
+    sqlx::query(
+        "UPDATE ai_settings SET provider = 'openai-compatible', api_key = NULL,
+           api_base_url = ?1, decision_model = NULL, reasoning_effort = NULL WHERE id = 1",
+    )
+    .bind(base_url)
+    .execute(app.db())
+    .await
+    .unwrap();
+    app.import_cards(&[fixtures::legal_commander_card()]).await;
+    let deck_id = insert_deck(app.db(), "Local AI", "commander").await;
+    add_deck_card(app.db(), deck_id, "oracle-test-commander", 1, "commander").await;
+    Mock::given(method("POST"))
+        .and(path("/local/v1/chat/completions"))
+        .respond_with(content_response(&analysis_json("2", &json!([]))))
+        .mount(&server)
+        .await;
+
+    let deck = decks::get(app.db(), deck_id).await.unwrap().unwrap();
+    let saved = analyze_deck::run(&app.state, &deck).await.unwrap();
+    assert_eq!(saved.commander_bracket_rating.as_deref(), Some("2"));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("authorization"));
+    assert!(!requests[0].headers.contains_key("http-referer"));
+    assert!(!requests[0].headers.contains_key("x-openrouter-title"));
+    let request: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(request["model"], "local-model");
+    assert!(request["tools"].is_array());
+    for field in ["session_id", "plugins", "reasoning", "response_format"] {
+        assert!(request.get(field).is_none(), "unexpected field {field}");
+    }
+}
+
+#[tokio::test]
+async fn answers_deck_questions_through_local_chat_completions() {
+    let server = MockServer::start().await;
+    let app = TestApp::new().await;
+    insert_settings(&app, "local-model", None).await;
+    let base_url = format!("{}/local/v1", server.uri());
+    sqlx::query(
+        "UPDATE ai_settings SET provider = 'openai-compatible', api_key = NULL,
+           api_base_url = ?1, decision_model = NULL, reasoning_effort = NULL WHERE id = 1",
+    )
+    .bind(base_url)
+    .execute(app.db())
+    .await
+    .unwrap();
+    let deck_id = insert_deck(app.db(), "Local question", "commander").await;
+    Mock::given(method("POST"))
+        .and(path("/local/v1/chat/completions"))
+        .respond_with(answer_response("Local answer", &[], &[]))
+        .mount(&server)
+        .await;
+
+    let question = ask_default(&app, deck_id, "What should I improve?").await;
+    answer_deck_question::run(&app.state, question.id)
+        .await
+        .unwrap();
+    assert_eq!(saved(&app, question.id).await.answer, "Local answer");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("authorization"));
+    assert!(!requests[0].headers.contains_key("http-referer"));
+    let request: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(request["model"], "local-model");
+    assert!(request["tools"].is_array());
+    for field in ["session_id", "plugins", "reasoning", "response_format"] {
+        assert!(request.get(field).is_none(), "unexpected field {field}");
+    }
+}
+
+#[tokio::test]
 async fn analyzes_and_persists_distinct_guideline_and_practical_brackets() {
     let server = MockServer::start().await;
     let app = app_with(&server).await;
@@ -729,7 +808,7 @@ async fn question_validation_and_settings_errors_save_nothing() {
     );
     assert_eq!(
         enqueue("Fine?", AskOptions::default()).await,
-        "Configure an AI provider, API key, and model in Settings first."
+        "Configure an AI provider and model in Settings first."
     );
     insert_settings(&app, "m", None).await;
     assert_eq!(
@@ -1778,7 +1857,7 @@ async fn queueing_rejects_missing_settings_without_creating_work() {
     match analyze_deck::enqueue(&app.state, deck_id).await {
         Err(AiError::User(message)) => assert_eq!(
             message,
-            "Configure an AI provider, API key, and model in Settings first."
+            "Configure an AI provider and model in Settings first."
         ),
         other => unreachable!("unexpected {other:?}"),
     }
@@ -2285,7 +2364,7 @@ async fn graphql_errors_match_the_documented_messages() {
             )
             .await
         ),
-        "Configure an AI provider, API key, and model in Settings first."
+        "Configure an AI provider and model in Settings first."
     );
     assert_eq!(
         message(
@@ -2295,7 +2374,7 @@ async fn graphql_errors_match_the_documented_messages() {
             )
             .await
         ),
-        "Configure an AI provider, API key, and model in Settings first."
+        "Configure an AI provider and model in Settings first."
     );
     assert_eq!(
         message(app.gql(r#"mutation { analyzeDeckList(text: "1 Sol Ring", format: "brawl") { deckAnalysisRequest { id } } }"#, json!({})).await),
@@ -2503,6 +2582,68 @@ async fn decision_cards(server: &MockServer) -> Vec<String> {
 fn sorted(mut names: Vec<String>) -> Vec<String> {
     names.sort();
     names
+}
+
+#[tokio::test]
+async fn assigns_ai_tags_through_local_chat_completions() {
+    let server = MockServer::start().await;
+    let app = TestApp::new().await;
+    insert_settings(&app, "local-model", None).await;
+    let base_url = format!("{}/local/v1", server.uri());
+    sqlx::query(
+        "UPDATE ai_settings SET provider = 'openai-compatible', api_key = NULL,
+           api_base_url = ?1, decision_model = NULL, reasoning_effort = NULL WHERE id = 1",
+    )
+    .bind(base_url)
+    .execute(app.db())
+    .await
+    .unwrap();
+    let commander_legal = json!({"commander": "legal"});
+    app.import_cards(&[
+        fixtures::legal_commander_card(),
+        legality_card("Grim Affliction", &["B"], &commander_legal),
+    ])
+    .await;
+    let deck_id = insert_deck(app.db(), "Local AI tags", "commander").await;
+    add_deck_card(app.db(), deck_id, "oracle-test-commander", 1, "commander").await;
+    add_deck_card(app.db(), deck_id, "oracle-grim-affliction", 1, "mainboard").await;
+    sqlx::query("UPDATE decks SET ai_card_categories = ?1 WHERE id = ?2")
+        .bind(json!([{"name": "Removal", "description": "Answers threats."}]).to_string())
+        .bind(deck_id)
+        .execute(app.db())
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/local/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"content": "{\"choice\":\"Removal\",\"confidence\":0.9}"}}]
+        })))
+        .mount(&server)
+        .await;
+
+    let configured = super::Configured::load(&app.state).await.unwrap();
+    assert_eq!(configured.decision_model, "local-model");
+    let assignments = card_categories::assign(&app.state, Some(&configured), deck_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        assignments.cards,
+        [("oracle-grim-affliction".to_owned(), "Removal".to_owned())]
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("authorization"));
+    assert!(!requests[0].headers.contains_key("http-referer"));
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "local-model");
+    assert_eq!(body["response_format"]["type"], "json_object");
+    assert!(
+        body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Grim Affliction")
+    );
 }
 
 #[tokio::test]

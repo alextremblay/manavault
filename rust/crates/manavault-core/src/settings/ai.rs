@@ -3,7 +3,7 @@
 //! (`Manavault.Encrypted.Binary`) and never leaves the server; GraphQL only
 //! reports whether one is saved.
 //!
-//! Saving validates the key and model against `OpenRouter`, the only provider.
+//! Saving validates the selected provider, API key, model, and compatible API URL.
 //! Deck analysis and questions belong to the AI module proper.
 
 use async_graphql::{Context, ErrorExtensions, InputObject, MaybeUndefined, Object, SimpleObject};
@@ -17,7 +17,7 @@ use crate::state::AppState;
 use crate::timestamp::Timestamp;
 
 const SINGLETON_ID: i64 = 1;
-const PROVIDERS: [&str; 1] = ["openrouter"];
+const PROVIDERS: [&str; 2] = ["openrouter", "openai-compatible"];
 /// The decision model used when none is saved.
 pub const DEFAULT_DECISION_MODEL: &str = "typesafe/jev-1.13";
 /// `OpenRouter`'s `reasoning.effort` values, highest first.
@@ -29,9 +29,11 @@ pub const REASONING_EFFORTS: [&str; 7] =
 pub struct AiSettings {
     pub provider: String,
     pub api_key: Option<String>,
+    pub api_base_url: Option<String>,
     pub model: Option<String>,
     pub deck_analysis_instructions: Option<String>,
-    /// The saved decision model; `None` uses [`DEFAULT_DECISION_MODEL`].
+    /// The saved decision model; defaults to Jev on OpenRouter and the selected
+    /// model on an OpenAI-compatible provider.
     pub decision_model: Option<String>,
     /// One of [`REASONING_EFFORTS`]; `None` leaves the model's default.
     pub reasoning_effort: Option<String>,
@@ -41,11 +43,14 @@ impl AiSettings {
     /// The decision model that assigns AI tags to deck cards.
     #[must_use]
     pub fn decision_model(&self) -> &str {
-        self.decision_model
-            .as_deref()
-            .unwrap_or(DEFAULT_DECISION_MODEL)
+        self.decision_model.as_deref().unwrap_or_else(|| {
+            if self.provider == "openai-compatible" {
+                self.model.as_deref().unwrap_or(DEFAULT_DECISION_MODEL)
+            } else {
+                DEFAULT_DECISION_MODEL
+            }
+        })
     }
-
     /// `Settings.secret_present?/1`.
     #[must_use]
     pub fn has_api_key(&self) -> bool {
@@ -68,7 +73,7 @@ pub async fn settings(state: &AppState) -> Result<AiSettings, sqlx::Error> {
     .execute(&state.db)
     .await?;
     let row = sqlx::query!(
-        "SELECT provider, api_key, model, deck_analysis_instructions, decision_model,
+        "SELECT provider, api_key, api_base_url, model, deck_analysis_instructions, decision_model,
            reasoning_effort
          FROM ai_settings WHERE id = ?1",
         SINGLETON_ID
@@ -78,6 +83,7 @@ pub async fn settings(state: &AppState) -> Result<AiSettings, sqlx::Error> {
     Ok(AiSettings {
         provider: row.provider,
         api_key: row.api_key.and_then(|stored| state.decrypt_secret(&stored)),
+        api_base_url: row.api_base_url,
         model: row.model,
         deck_analysis_instructions: row.deck_analysis_instructions,
         decision_model: row.decision_model,
@@ -91,9 +97,10 @@ pub async fn settings(state: &AppState) -> Result<AiSettings, sqlx::Error> {
 pub struct AiSettingsInput {
     pub provider: String,
     pub api_key: Option<String>,
+    pub api_base_url: MaybeUndefined<String>,
     pub model: String,
     pub deck_analysis_instructions: MaybeUndefined<String>,
-    /// Omit to keep the saved model; null or blank uses the default.
+    /// Omit to keep the saved model; null or blank uses the provider default.
     pub decision_model: MaybeUndefined<String>,
     /// Omit to keep the saved effort; null or blank uses the model's default.
     pub reasoning_effort: MaybeUndefined<String>,
@@ -113,17 +120,24 @@ fn normalize(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-/// Validates and saves the settings (`UpdateSettings.run/1`). A blank or
-/// missing API key keeps the saved one.
+/// Validates and saves the settings. A blank key keeps the saved key only
+/// when the selected provider is unchanged.
 pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettings, UpdateError> {
     let current = settings(state).await?;
+    let provider = normalize(&input.provider).unwrap_or_default();
     let api_key = match input.api_key.as_deref().and_then(normalize) {
         Some(key) => Some(key),
-        None => current.api_key.as_deref().and_then(normalize),
+        None if provider == current.provider => current.api_key.as_deref().and_then(normalize),
+        None => None,
     };
-    let candidate = AiSettings {
-        provider: normalize(&input.provider).unwrap_or_default(),
+    let mut candidate = AiSettings {
+        provider,
         api_key,
+        api_base_url: match input.api_base_url {
+            MaybeUndefined::Undefined => current.api_base_url.clone(),
+            MaybeUndefined::Null => None,
+            MaybeUndefined::Value(url) => normalize(&url),
+        },
         model: normalize(&input.model),
         deck_analysis_instructions: match input.deck_analysis_instructions {
             MaybeUndefined::Undefined => current.deck_analysis_instructions.clone(),
@@ -143,6 +157,9 @@ pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettin
             MaybeUndefined::Value(text) => normalize(&text),
         },
     };
+    if candidate.provider == "openai-compatible" {
+        candidate.reasoning_effort = None;
+    }
 
     let mut errors = ValidationError::new();
     if candidate.provider.is_empty() {
@@ -150,8 +167,11 @@ pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettin
     } else if !PROVIDERS.contains(&candidate.provider.as_str()) {
         errors.add("provider", INVALID);
     }
-    if candidate.api_key.is_none() {
+    if candidate.provider != "openai-compatible" && candidate.api_key.is_none() {
         errors.add("api_key", BLANK);
+    }
+    if candidate.provider == "openai-compatible" && candidate.api_base_url.is_none() {
+        errors.add("api_base_url", BLANK);
     }
     if candidate.model.is_none() {
         errors.add("model", BLANK);
@@ -162,6 +182,13 @@ pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettin
         .is_some_and(|model| model.chars().count() > 200)
     {
         errors.add("model", too_long(200));
+    }
+    if candidate
+        .api_base_url
+        .as_deref()
+        .is_some_and(|url| url.chars().count() > 2000)
+    {
+        errors.add("api_base_url", too_long(2000));
     }
     if candidate
         .decision_model
@@ -186,10 +213,15 @@ pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettin
     }
     errors.into_result().map_err(UpdateError::Invalid)?;
 
-    let mut validated = openrouter::validate_settings(state, &candidate).await;
-    // Decision models are not in OpenRouter's model list, so a changed one
-    // is checked with a one-question Decisions request instead.
-    if validated.is_ok() && candidate.decision_model() != current.decision_model() {
+    let mut validated = match candidate.provider.as_str() {
+        "openrouter" => openrouter::validate_settings(state, &candidate).await,
+        "openai-compatible" => openai_compatible::validate_settings(state, &candidate).await,
+        _ => unreachable!("provider is validated above"),
+    };
+    if validated.is_ok()
+        && candidate.provider == "openrouter"
+        && candidate.decision_model() != current.decision_model()
+    {
         validated = openrouter::validate_decision_model(state, &candidate).await;
     }
     if let Err((field, message)) = validated {
@@ -204,11 +236,12 @@ pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettin
         .and_then(|key| state.encrypt_secret(key));
     let now = Timestamp::now();
     sqlx::query!(
-        "UPDATE ai_settings SET provider = ?1, api_key = ?2, model = ?3,
-           deck_analysis_instructions = ?4, decision_model = ?5, reasoning_effort = ?6,
-           updated_at = ?7 WHERE id = ?8",
+        "UPDATE ai_settings SET provider = ?1, api_key = ?2, api_base_url = ?3, model = ?4,
+           deck_analysis_instructions = ?5, decision_model = ?6, reasoning_effort = ?7,
+           updated_at = ?8 WHERE id = ?9",
         candidate.provider,
         stored_key,
+        candidate.api_base_url,
         candidate.model,
         candidate.deck_analysis_instructions,
         candidate.decision_model,
@@ -219,6 +252,94 @@ pub async fn update(state: &AppState, input: AiSettingsInput) -> Result<AiSettin
     .execute(&state.db)
     .await?;
     Ok(candidate)
+}
+
+/// Validates a self-hosted OpenAI-compatible server using its `/models` endpoint.
+pub mod openai_compatible {
+    use super::{AiSettings, Value};
+    use crate::state::AppState;
+    use reqwest::Url;
+
+    const UNREACHABLE: &str = "Could not reach the OpenAI-compatible API to validate settings.";
+
+    /// Returns an HTTP(S) base URL without credentials, query, or fragment.
+    pub fn normalize_base_url(value: &str) -> Result<String, &'static str> {
+        let url = Url::parse(value.trim()).map_err(|_| "Enter a valid API base URL.")?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Use an HTTP(S) API base URL without credentials, query, or fragment.");
+        }
+        Ok(value.trim().trim_end_matches('/').to_owned())
+    }
+
+    /// Checks that both configured models are present in the compatible `/models` response.
+    pub async fn validate_settings(
+        state: &AppState,
+        settings: &AiSettings,
+    ) -> Result<(), (&'static str, String)> {
+        let url = normalize_base_url(settings.api_base_url.as_deref().unwrap_or_default())
+            .map_err(|message| ("api_base_url", message.to_owned()))?;
+        let model = settings.model.as_deref().unwrap_or_default();
+        let mut request = state
+            .http
+            .get(format!("{url}/models"))
+            .header("accept", "application/json")
+            .timeout(std::time::Duration::from_secs(30));
+        if let Some(key) = settings.api_key.as_deref().filter(|key| !key.is_empty()) {
+            request = request.bearer_auth(key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ("api_base_url", request_error(&error)))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let models = serde_json::from_str::<Value>(&body)
+            .ok()
+            .filter(|_| status.is_success())
+            .and_then(|value| value.get("data").and_then(Value::as_array).cloned())
+            .ok_or_else(|| {
+                (
+                    "api_base_url",
+                    format!(
+                        "The API did not return a valid models list (HTTP {}).",
+                        status.as_u16()
+                    ),
+                )
+            })?;
+        let contains_model = |name: &str| {
+            models
+                .iter()
+                .any(|entry| entry.get("id").and_then(Value::as_str) == Some(name))
+        };
+        if !contains_model(model) {
+            return Err((
+                "model",
+                format!("Model \"{model}\" was not found on this API."),
+            ));
+        }
+        let decision_model = settings.decision_model();
+        if !contains_model(decision_model) {
+            return Err((
+                "decision_model",
+                format!("Decision model \"{decision_model}\" was not found on this API."),
+            ));
+        }
+        Ok(())
+    }
+
+    fn request_error(error: &reqwest::Error) -> String {
+        if error.is_timeout() {
+            format!("{UNREACHABLE} The request timed out.")
+        } else {
+            UNREACHABLE.to_owned()
+        }
+    }
 }
 
 /// `OpenRouter`'s settings check (`Providers.OpenRouter.validate_settings/1`).
@@ -458,9 +579,10 @@ pub mod openrouter {
 #[graphql(name = "AiSettings")]
 pub struct AiSettingsObject {
     pub provider: String,
+    pub api_base_url: Option<String>,
     pub model: Option<String>,
     pub deck_analysis_instructions: Option<String>,
-    /// The decision model in use, the default when none is saved.
+    /// The decision model in use, the provider-specific default when none is saved.
     pub decision_model: String,
     /// The reasoning effort; null leaves the model's default.
     pub reasoning_effort: Option<String>,
@@ -471,6 +593,7 @@ impl From<&AiSettings> for AiSettingsObject {
     fn from(settings: &AiSettings) -> Self {
         Self {
             provider: settings.provider.clone(),
+            api_base_url: settings.api_base_url.clone(),
             model: settings.model.clone(),
             deck_analysis_instructions: settings.deck_analysis_instructions.clone(),
             decision_model: settings.decision_model().to_owned(),
@@ -512,6 +635,9 @@ impl AiSettingsQueries {
     ) -> GqlResult<Option<AiModelReasoning>> {
         let state = state(ctx);
         let saved = settings(state).await?;
+        if saved.provider == "openai-compatible" {
+            return Ok(None);
+        }
         let entry = openrouter::find_model(
             state,
             saved.api_key.as_deref().unwrap_or_default(),
@@ -601,6 +727,7 @@ mod tests {
         AiSettingsInput {
             provider: "openrouter".into(),
             api_key: api_key.map(str::to_owned),
+            api_base_url: MaybeUndefined::Undefined,
             model: model.into(),
             deck_analysis_instructions: instructions,
             decision_model: MaybeUndefined::Undefined,
@@ -608,6 +735,89 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn saves_an_openai_compatible_server_without_an_api_key() {
+        let server = openrouter(&["openrouter/model"]).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"id": "local-model"}]
+            })))
+            .mount(&server)
+            .await;
+        let app = gql_app_with(&server).await;
+        update(
+            &app.state,
+            input(
+                Some("test-openrouter-key"),
+                "openrouter/model",
+                MaybeUndefined::Undefined,
+            ),
+        )
+        .await
+        .unwrap();
+        let base_url = format!("{}/v1/", server.uri());
+        let saved = update(
+            &app.state,
+            AiSettingsInput {
+                provider: "openai-compatible".into(),
+                api_key: None,
+                api_base_url: MaybeUndefined::Value(base_url.clone()),
+                model: "local-model".into(),
+                deck_analysis_instructions: MaybeUndefined::Undefined,
+                decision_model: MaybeUndefined::Undefined,
+                reasoning_effort: MaybeUndefined::Undefined,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(saved.provider, "openai-compatible");
+        assert_eq!(saved.api_base_url.as_deref(), Some(base_url.as_str()));
+        assert_eq!(saved.decision_model(), "local-model");
+        assert!(!saved.has_api_key());
+        assert_eq!(settings(&app.state).await.unwrap(), saved);
+        assert_eq!(
+            app.gql_data(
+                "{ aiSettings { provider apiBaseUrl model decisionModel hasApiKey } }",
+                json!({}),
+            )
+            .await,
+            json!({"aiSettings": {
+                "provider": "openai-compatible",
+                "apiBaseUrl": base_url,
+                "model": "local-model",
+                "decisionModel": "local-model",
+                "hasApiKey": false
+            }}),
+        );
+        let requests = server.received_requests().await.unwrap();
+        let local_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/v1/models")
+            .collect();
+        assert_eq!(local_requests.len(), 1);
+        assert!(!local_requests[0].headers.contains_key("authorization"));
+    }
+
+    #[test]
+    fn compatible_base_urls_reject_unsafe_url_components() {
+        assert_eq!(
+            openai_compatible::normalize_base_url("http://localhost:1234/v1/").unwrap(),
+            "http://localhost:1234/v1"
+        );
+        for invalid in [
+            "ftp://localhost/v1",
+            "http://user:secret@localhost/v1",
+            "http://localhost/v1?key=value",
+            "http://localhost/v1#fragment",
+        ] {
+            assert!(
+                openai_compatible::normalize_base_url(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
     #[tokio::test]
     async fn reasoning_efforts_follow_what_each_model_supports() {
         let server = openrouter_with(vec![

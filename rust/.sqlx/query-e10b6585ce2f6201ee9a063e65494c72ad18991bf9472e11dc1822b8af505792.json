@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE ai_settings SET provider = ?1, api_key = ?2, api_base_url = ?3, model = ?4,\n           deck_analysis_instructions = ?5, decision_model = ?6, reasoning_effort = ?7,\n           updated_at = ?8 WHERE id = ?9",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "e10b6585ce2f6201ee9a063e65494c72ad18991bf9472e11dc1822b8af505792"
+}

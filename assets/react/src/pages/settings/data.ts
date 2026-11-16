@@ -57,6 +57,7 @@ export const AISettingsDocument = graphql(`
   query AISettings {
     aiSettings {
       provider
+      apiBaseUrl
       model
       deckAnalysisInstructions
       decisionModel
@@ -71,6 +72,7 @@ export const UpdateAISettingsDocument = graphql(`
     updateAiSettings(input: $input) {
       aiSettings {
         provider
+        apiBaseUrl
         model
         deckAnalysisInstructions
         decisionModel

@@ -29,13 +29,13 @@ use manavault_core::state::AppState;
 use manavault_core::timestamp::Timestamp;
 
 /// Changes whenever the request changes, so earlier assignments are redone.
-const REQUEST_VERSION: &str = "3";
+const REQUEST_VERSION: &str = "4";
 /// Always offered last, so a card that fits nothing has somewhere to go.
 pub const OTHER: &str = "Other";
 const OTHER_DESCRIPTION: &str = "Does not fit any of the roles above.";
 const CONCURRENCY: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(20);
-const DECISION_ERROR: &str = "OpenRouter could not categorize this card.";
+const DECISION_ERROR: &str = "The AI provider could not categorize this card.";
 
 /// A deck's categories and the category of each assigned card.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -62,9 +62,17 @@ async fn saved_categories(pool: &SqlitePool, deck_id: i64) -> Result<Vec<CardCat
 
 /// Identifies the inputs an assignment was made from: the decision model,
 /// the offered categories, and the sorted commander oracle ids.
-fn digest(model: &str, categories: &[CardCategory], commanders: &BTreeSet<&str>) -> String {
+fn digest(
+    provider: &str,
+    api_base_url: &str,
+    model: &str,
+    categories: &[CardCategory],
+    commanders: &BTreeSet<&str>,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(format!("{model}\n{REQUEST_VERSION}\n"));
+    hasher.update(format!(
+        "{provider}\n{api_base_url}\n{model}\n{REQUEST_VERSION}\n"
+    ));
     hasher.update(serde_json::to_vec(categories).unwrap_or_default());
     for commander in commanders {
         hasher.update(b"\n");
@@ -176,7 +184,7 @@ pub fn decode(categories: &[CardCategory], body: &Value) -> Result<Decision, Str
         .and_then(|answer| answer.get("choice"))
         .and_then(Value::as_str)
         .filter(|choice| categories.iter().any(|category| category.name == *choice))
-        .ok_or_else(|| "OpenRouter returned an unknown card category.".to_owned())?;
+        .ok_or_else(|| "The AI provider returned an unknown card category.".to_owned())?;
     Ok(Decision {
         category: category.to_owned(),
         confidence: answer
@@ -186,16 +194,61 @@ pub fn decode(categories: &[CardCategory], body: &Value) -> Result<Decision, Str
     })
 }
 
-async fn decide(state: &AppState, api_key: &str, request: &str) -> Result<Value, String> {
-    let response = state
+/// A local chat-completion request that preserves the analysis category order.
+fn compatible_decision_request(
+    model: &str,
+    categories: &[CardCategory],
+    commanders: &[Value],
+    card: &Value,
+) -> Value {
+    let instructions = if commanders.is_empty() {
+        "Which role does this card fill in this deck?"
+    } else {
+        "Which role does this card fill in a deck led by these commanders?"
+    };
+    let state = if commanders.is_empty() {
+        json!({"card": card})
+    } else {
+        json!({"commanders": commanders, "card": card})
+    };
+    let criteria: Vec<Value> = categories
+        .iter()
+        .map(|category| json!({"name": category.name, "description": category.description}))
+        .collect();
+    json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": format!(
+                "{instructions} Choose exactly one category from this ordered list. Return a JSON object with a string field `choice` containing its exact name and an optional numeric `confidence` from 0 to 1."
+            )},
+            {"role": "user", "content": json!({"state": state, "categories": criteria}).to_string()}
+        ],
+        "response_format": {"type": "json_object"}
+    })
+}
+
+async fn decide(state: &AppState, settings: &Configured, request: &str) -> Result<Value, String> {
+    let openrouter = settings.provider == "openrouter";
+    let url = if openrouter {
+        state.config.platform_urls.openrouter_decisions.clone()
+    } else {
+        format!("{}/chat/completions", settings.api_base_url)
+    };
+    let mut builder = state
         .http
-        .post(&state.config.platform_urls.openrouter_decisions)
-        .bearer_auth(api_key)
+        .post(url)
         .header("accept", "application/json")
-        .header("http-referer", "https://github.com/cfbender/manavault")
-        .header("x-openrouter-title", "ManaVault")
-        .timeout(TIMEOUT)
         .header("content-type", "application/json")
+        .timeout(TIMEOUT);
+    if !settings.api_key.is_empty() {
+        builder = builder.bearer_auth(&settings.api_key);
+    }
+    if openrouter {
+        builder = builder
+            .header("http-referer", "https://github.com/cfbender/manavault")
+            .header("x-openrouter-title", "ManaVault");
+    }
+    let response = builder
         .body(request.to_owned())
         .send()
         .await
@@ -203,9 +256,25 @@ async fn decide(state: &AppState, api_key: &str, request: &str) -> Result<Value,
     let status = response.status().as_u16();
     let text = response.text().await.map_err(|error| error.to_string())?;
     if !(200..300).contains(&status) {
-        return Err(response_error(status, &text, DECISION_ERROR));
+        return Err(if openrouter {
+            response_error(status, &text, DECISION_ERROR)
+        } else {
+            format!("OpenAI-compatible API returned an error (HTTP {status}).")
+        });
     }
-    serde_json::from_str(&text).map_err(|_| DECISION_ERROR.to_owned())
+    let response: Value = serde_json::from_str(&text).map_err(|_| DECISION_ERROR.to_owned())?;
+    if openrouter {
+        return Ok(response);
+    }
+    let content = response
+        .pointer("/choices/0/message/content")
+        .ok_or_else(|| DECISION_ERROR.to_owned())?;
+    let answer = match content {
+        Value::String(text) => serde_json::from_str(text).map_err(|_| DECISION_ERROR.to_owned())?,
+        Value::Object(_) => content.clone(),
+        _ => return Err(DECISION_ERROR.to_owned()),
+    };
+    Ok(json!({"answers": {"role": answer}}))
 }
 
 /// Assigns categories to the deck's cards that lack a current assignment
@@ -231,19 +300,39 @@ pub async fn assign(
         .iter()
         .map(|card| card.card.oracle_id.as_str())
         .collect();
-    let model = match settings {
-        Some(settings) => settings.decision_model.clone(),
-        None => manavault_core::settings::ai::settings(state)
-            .await?
-            .decision_model()
-            .to_owned(),
+    let (model, provider, api_base_url) = match settings {
+        Some(settings) => (
+            settings.decision_model.clone(),
+            settings.provider.clone(),
+            settings.api_base_url.clone(),
+        ),
+        None => {
+            let saved = manavault_core::settings::ai::settings(state).await?;
+            (
+                saved.decision_model().to_owned(),
+                saved.provider,
+                saved
+                    .api_base_url
+                    .unwrap_or_default()
+                    .trim_end_matches('/')
+                    .to_owned(),
+            )
+        }
     };
-    let digest = digest(&model, &categories, &commander_ids);
+    let digest = digest(
+        &provider,
+        &api_base_url,
+        &model,
+        &categories,
+        &commander_ids,
+    );
     let mut assigned = current(&state.db, deck_id, &digest).await?;
 
-    if let Some(settings) =
-        settings.filter(|s| s.provider().is_ok_and(|p| p == Provider::OpenRouter))
-    {
+    if let Some(settings) = settings.filter(|settings| {
+        settings.provider().is_ok_and(|provider| {
+            matches!(provider, Provider::OpenRouter | Provider::OpenAiCompatible)
+        })
+    }) {
         let mut missing: Vec<&DeckCardInput> = Vec::new();
         for card in &others {
             let id = card.card.oracle_id.as_str();
@@ -312,22 +401,32 @@ async fn run_decisions(
     let mut tasks = JoinSet::new();
     for card in cards {
         let id = card.card.oracle_id.as_str().to_owned();
-        let body = serde_json::to_string(&request(
-            &settings.decision_model,
-            &categories,
-            commanders,
-            &card_state(card),
-        ))
+        let card = card_state(card);
+        let body = if settings.provider == "openrouter" {
+            serde_json::to_string(&request(
+                &settings.decision_model,
+                &categories,
+                commanders,
+                &card,
+            ))
+        } else {
+            serde_json::to_string(&compatible_decision_request(
+                &settings.decision_model,
+                &categories,
+                commanders,
+                &card,
+            ))
+        }
         .unwrap_or_default();
-        let (state, api_key, categories, permits) = (
+        let (state, settings, categories, permits) = (
             state.clone(),
-            settings.api_key.clone(),
+            settings.clone(),
             categories.clone(),
             permits.clone(),
         );
         tasks.spawn(async move {
             let _permit = permits.acquire_owned().await;
-            let result = decide(&state, &api_key, &body)
+            let result = decide(&state, &settings, &body)
                 .await
                 .and_then(|response| decode(&categories, &response));
             (id, result)

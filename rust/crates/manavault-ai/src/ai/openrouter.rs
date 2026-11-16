@@ -1,18 +1,11 @@
-//! The `OpenRouter` provider (`AI.Providers.OpenRouter`): deck analysis and
-//! deck questions as structured chat completions, with catalog and
-//! collection tools.
+//! The OpenRouter and OpenAI-compatible providers: deck analysis and deck
+//! questions as structured chat completions, with catalog and collection tools.
 //!
-//! The base URL is `config.platform_urls.openrouter_api`. Each completion
-//! logs one diagnostics line (status, finish reasons, token counts including
-//! prompt-cache reads and writes, content sizes) without the prompt, the
-//! answer, reasoning text, or the API key.
-//!
-//! Requests are shaped for prompt caching: the system prompt and the deck
-//! data come first, every request in one conversation shares a
-//! `session_id` so `OpenRouter` keeps routing it to the provider holding the
-//! cache, and [`mark_cache_breakpoints`] marks the stable prefix for
-//! providers that need explicit breakpoints (Anthropic). Providers that
-//! cache automatically ignore the marks.
+//! OpenRouter requests use its configured base URL and cache extensions. The
+//! compatible provider uses the saved API base URL and only standard chat
+//! completion fields. Each completion logs one diagnostics line without the
+//! prompt, answer, reasoning text, or API key.
+
 //!
 //! Tools and `response_format` never travel in the same request. Some
 //! endpoints enforce a JSON schema by constraining every output token, which
@@ -73,39 +66,71 @@ impl Operation {
         }
     }
 
-    fn http_error(self) -> &'static str {
-        match self {
-            Self::DeckAnalysis => "OpenRouter could not analyze this deck.",
-            Self::DeckQuestion => "OpenRouter could not answer this question.",
+    fn http_error(self, openrouter: bool) -> &'static str {
+        match (self, openrouter) {
+            (Self::DeckAnalysis, true) => "OpenRouter could not analyze this deck.",
+            (Self::DeckQuestion, true) => "OpenRouter could not answer this question.",
+            (Self::DeckAnalysis, false) => "The AI provider could not analyze this deck.",
+            (Self::DeckQuestion, false) => "The AI provider could not answer this question.",
         }
     }
 
-    fn request_error(self) -> &'static str {
-        match self {
-            Self::DeckAnalysis => "Could not reach OpenRouter to analyze this deck.",
-            Self::DeckQuestion => "Could not reach OpenRouter to answer this question.",
+    fn request_error(self, openrouter: bool) -> &'static str {
+        match (self, openrouter) {
+            (Self::DeckAnalysis, true) => "Could not reach OpenRouter to analyze this deck.",
+            (Self::DeckQuestion, true) => "Could not reach OpenRouter to answer this question.",
+            (Self::DeckAnalysis, false) => "Could not reach the AI API to analyze this deck.",
+            (Self::DeckQuestion, false) => "Could not reach the AI API to answer this question.",
         }
     }
 
-    fn decode_error(self, error: DecodeError) -> &'static str {
-        match (self, error) {
-            (Self::DeckAnalysis, DecodeError::TokenLimit) => {
+    fn decode_error(self, error: DecodeError, openrouter: bool) -> &'static str {
+        match (self, error, openrouter) {
+            (Self::DeckAnalysis, DecodeError::TokenLimit, true) => {
                 "OpenRouter ran out of output tokens before finishing the deck analysis."
             }
-            (Self::DeckAnalysis, DecodeError::Incomplete) => {
+            (Self::DeckAnalysis, DecodeError::Incomplete, true) => {
                 "OpenRouter returned an incomplete deck analysis."
             }
-            (Self::DeckAnalysis, DecodeError::Invalid) => {
+            (Self::DeckAnalysis, DecodeError::Invalid, true) => {
                 "OpenRouter returned an invalid deck analysis."
             }
-            (Self::DeckQuestion, DecodeError::TokenLimit) => {
+            (Self::DeckQuestion, DecodeError::TokenLimit, true) => {
                 "OpenRouter ran out of output tokens before finishing the answer."
             }
-            (Self::DeckQuestion, DecodeError::Incomplete) => {
+            (Self::DeckQuestion, DecodeError::Incomplete, true) => {
                 "OpenRouter returned an incomplete answer."
             }
-            (Self::DeckQuestion, DecodeError::Invalid) => "OpenRouter returned an invalid answer.",
+            (Self::DeckQuestion, DecodeError::Invalid, true) => {
+                "OpenRouter returned an invalid answer."
+            }
+            (Self::DeckAnalysis, DecodeError::TokenLimit, false) => {
+                "The AI provider ran out of output tokens before finishing the deck analysis."
+            }
+            (Self::DeckAnalysis, DecodeError::Incomplete, false) => {
+                "The AI provider returned an incomplete deck analysis."
+            }
+            (Self::DeckAnalysis, DecodeError::Invalid, false) => {
+                "The AI provider returned an invalid deck analysis."
+            }
+            (Self::DeckQuestion, DecodeError::TokenLimit, false) => {
+                "The AI provider ran out of output tokens before finishing the answer."
+            }
+            (Self::DeckQuestion, DecodeError::Incomplete, false) => {
+                "The AI provider returned an incomplete answer."
+            }
+            (Self::DeckQuestion, DecodeError::Invalid, false) => {
+                "The AI provider returned an invalid answer."
+            }
         }
+    }
+}
+
+fn provider_error(settings: &Configured, status: u16, body: &str, fallback: &str) -> String {
+    if settings.provider == "openrouter" {
+        response_error(status, body, fallback)
+    } else {
+        format!("{fallback} (HTTP {status})")
     }
 }
 
@@ -249,21 +274,30 @@ enum Response {
     Failed(reqwest::Error),
 }
 
-async fn post_completion(state: &AppState, api_key: &str, request: &Value) -> Response {
-    let sent = state
-        .http
-        .post(format!(
+async fn post_completion(state: &AppState, settings: &Configured, body: &Value) -> Response {
+    let openrouter = settings.provider == "openrouter";
+    let url = if openrouter {
+        format!(
             "{}/chat/completions",
             state.config.platform_urls.openrouter_api
-        ))
-        .bearer_auth(api_key)
+        )
+    } else {
+        format!("{}/chat/completions", settings.api_base_url)
+    };
+    let mut builder = state
+        .http
+        .post(url)
         .header("accept", "application/json")
-        .header("http-referer", "https://github.com/cfbender/manavault")
-        .header("x-openrouter-title", "ManaVault")
-        .timeout(COMPLETION_TIMEOUT)
-        .json(request)
-        .send()
-        .await;
+        .timeout(COMPLETION_TIMEOUT);
+    if !settings.api_key.is_empty() {
+        builder = builder.bearer_auth(&settings.api_key);
+    }
+    if openrouter {
+        builder = builder
+            .header("http-referer", "https://github.com/cfbender/manavault")
+            .header("x-openrouter-title", "ManaVault");
+    }
+    let sent = builder.json(body).send().await;
     let response = match sent {
         Ok(response) => response,
         Err(error) => return Response::Failed(error),
@@ -299,9 +333,18 @@ async fn complete(
     operation: Operation,
 ) -> Result<Value, String> {
     let Value::Object(mut request) = request else {
-        return Err(operation.http_error().to_owned());
+        return Err(operation
+            .http_error(settings.provider == "openrouter")
+            .to_owned());
     };
-    if let Some(effort) = &settings.reasoning_effort {
+    if settings.provider != "openrouter" {
+        request.remove("session_id");
+        request.remove("plugins");
+        request.remove("reasoning");
+    }
+    if settings.provider == "openrouter"
+        && let Some(effort) = &settings.reasoning_effort
+    {
         request.insert("reasoning".into(), json!({"effort": effort}));
     }
     describe_response_format(&mut request);
@@ -313,9 +356,11 @@ async fn complete(
         if tools_offered {
             sent.remove("response_format");
         }
-        mark_cache_breakpoints(&mut sent);
+        if settings.provider == "openrouter" {
+            mark_cache_breakpoints(&mut sent);
+        }
         let started = Instant::now();
-        match post_completion(state, &settings.api_key, &Value::Object(sent)).await {
+        match post_completion(state, settings, &Value::Object(sent)).await {
             Response::Http { status, body, .. } if (200..300).contains(&status) => {
                 let calls = tool_calls(&body);
                 if calls.is_empty() {
@@ -342,7 +387,11 @@ async fn complete(
                         Err(error) => LogResult::Decode(error),
                     };
                     log_completion(&outcome, operation, &settings.model, started, status, &body);
-                    return result.map_err(|error| operation.decode_error(error).to_owned());
+                    return result.map_err(|error| {
+                        operation
+                            .decode_error(error, settings.provider == "openrouter")
+                            .to_owned()
+                    });
                 }
                 log_completion(
                     &LogResult::ToolCalls,
@@ -353,7 +402,11 @@ async fn complete(
                     &body,
                 );
                 if round > MAX_TOOL_ROUNDS {
-                    return Err(TOOL_LOOP.to_owned());
+                    return Err(if settings.provider == "openrouter" {
+                        TOOL_LOOP.to_owned()
+                    } else {
+                        "The AI provider kept calling tools instead of answering.".to_owned()
+                    });
                 }
                 let mut follow_up = vec![assistant_message(&body)];
                 for call in &calls {
@@ -385,7 +438,12 @@ async fn complete(
                         404,
                         &body,
                     );
-                    return Err(response_error(404, &text, operation.http_error()));
+                    return Err(provider_error(
+                        settings,
+                        404,
+                        &text,
+                        operation.http_error(settings.provider == "openrouter"),
+                    ));
                 }
             }
             Response::Http { status, body, text } => {
@@ -397,7 +455,12 @@ async fn complete(
                     status,
                     &body,
                 );
-                return Err(response_error(status, &text, operation.http_error()));
+                return Err(provider_error(
+                    settings,
+                    status,
+                    &text,
+                    operation.http_error(settings.provider == "openrouter"),
+                ));
             }
             Response::Failed(error) => {
                 tracing::warn!(
@@ -408,9 +471,14 @@ async fn complete(
                     request_error_reason(&error)
                 );
                 return Err(if error.is_timeout() {
-                    format!("{} The request timed out.", operation.request_error())
+                    format!(
+                        "{} The request timed out.",
+                        operation.request_error(settings.provider == "openrouter")
+                    )
                 } else {
-                    operation.request_error().to_owned()
+                    operation
+                        .request_error(settings.provider == "openrouter")
+                        .to_owned()
                 });
             }
         }
@@ -761,11 +829,11 @@ mod tests {
         );
         assert_eq!(decode(&json!("text")), Err(DecodeError::Incomplete));
         assert_eq!(
-            Operation::DeckAnalysis.decode_error(DecodeError::Invalid),
+            Operation::DeckAnalysis.decode_error(DecodeError::Invalid, true),
             "OpenRouter returned an invalid deck analysis."
         );
         assert_eq!(
-            Operation::DeckQuestion.decode_error(DecodeError::TokenLimit),
+            Operation::DeckQuestion.decode_error(DecodeError::TokenLimit, true),
             "OpenRouter ran out of output tokens before finishing the answer."
         );
     }

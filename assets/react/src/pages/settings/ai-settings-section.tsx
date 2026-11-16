@@ -71,6 +71,7 @@ function AISettingsForm({ settings }: { settings: AISettings }) {
   const { showToast } = useToast()
   const [provider, setProvider] = useState(settings.provider)
   const [apiKey, setApiKey] = useState("")
+  const [apiBaseUrl, setApiBaseUrl] = useState(settings.apiBaseUrl ?? "")
   const [model, setModel] = useState(settings.model ?? "")
   const [deckAnalysisInstructions, setDeckAnalysisInstructions] = useState(
     settings.deckAnalysisInstructions ?? "",
@@ -78,9 +79,11 @@ function AISettingsForm({ settings }: { settings: AISettings }) {
   const [decisionModel, setDecisionModel] = useState(settings.decisionModel)
   const [reasoningEffort, setReasoningEffort] = useState(settings.reasoningEffort ?? "")
   const lookupModel = useDebouncedValue(model.trim(), 400)
+  const isOpenRouter = provider === "openrouter"
+  const hasSavedApiKey = settings.hasApiKey && settings.provider === provider
   const reasoningQuery = useQuery(AIModelReasoningDocument, {
     variables: { model: lookupModel },
-    skip: !lookupModel,
+    skip: !lookupModel || !isOpenRouter,
   })
   const loadedReasoning =
     lookupModel && lookupModel === model.trim() && reasoningQuery.data && !reasoningQuery.loading
@@ -99,10 +102,11 @@ function AISettingsForm({ settings }: { settings: AISettings }) {
       variables: {
         input: {
           provider,
+          apiBaseUrl: isOpenRouter ? null : apiBaseUrl,
           model,
           deckAnalysisInstructions,
           decisionModel,
-          reasoningEffort: effort || null,
+          reasoningEffort: isOpenRouter ? effort || null : null,
           ...(apiKey.trim() ? { apiKey } : {}),
         },
       },
@@ -139,89 +143,119 @@ function AISettingsForm({ settings }: { settings: AISettings }) {
           <div>
             <h2 className="text-2xl font-black tracking-normal">Deck analysis provider</h2>
             <p className="mt-1 max-w-[72ch] text-sm text-base-content/60">
-              ManaVault sends a decklist to the selected provider only when you choose Analyze deck.
-              Saving validates both the API key and model ID.
+              Saving validates the model and checks OpenRouter credentials or the compatible API
+              URL.
             </p>
           </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Provider" htmlFor="ai-provider">
-            <Select value={provider} onValueChange={setProvider}>
+            <Select
+              value={provider}
+              onValueChange={(value) => {
+                setProvider(value)
+                setDecisionModel(value === "openai-compatible" ? "" : "typesafe/jev-1.13")
+              }}
+            >
               <SelectTrigger id="ai-provider">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="openrouter">OpenRouter</SelectItem>
+                <SelectItem value="openai-compatible">OpenAI-compatible</SelectItem>
               </SelectContent>
             </Select>
           </Field>
+          {!isOpenRouter ? (
+            <Field
+              label="API base URL"
+              htmlFor="ai-api-base-url"
+              help="For example, http://localhost:1234/v1. The server must be reachable from ManaVault."
+            >
+              <Input
+                id="ai-api-base-url"
+                type="url"
+                value={apiBaseUrl}
+                onChange={(event) => setApiBaseUrl(event.target.value)}
+                placeholder="http://localhost:1234/v1"
+                autoComplete="url"
+                required
+              />
+            </Field>
+          ) : null}
 
           <Field
             label="Model ID"
             htmlFor="ai-model"
-            help="Use an OpenRouter model ID, such as anthropic/claude-sonnet-4."
+            help={
+              isOpenRouter
+                ? "Use an OpenRouter model ID, such as anthropic/claude-sonnet-4."
+                : "Use a model ID exposed by the compatible API server."
+            }
           >
             <Input
               id="ai-model"
               value={model}
               onChange={(event) => setModel(event.target.value)}
-              placeholder="provider/model-name"
+              placeholder={isOpenRouter ? "provider/model-name" : "model-name"}
               autoComplete="off"
               required
             />
           </Field>
 
           <Field
-            label="OpenRouter API key"
+            label={isOpenRouter ? "OpenRouter API key" : "API key (optional)"}
             htmlFor="ai-api-key"
-            help={settings.hasApiKey ? "Leave blank to keep the saved key." : undefined}
+            help={hasSavedApiKey ? "Leave blank to keep the saved key." : undefined}
           >
             <Input
               id="ai-api-key"
               type="password"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder={settings.hasApiKey ? "Saved" : "sk-or-v1-…"}
+              placeholder={hasSavedApiKey ? "Saved" : isOpenRouter ? "sk-or-v1-…" : "Optional"}
               autoComplete="new-password"
-              required={!settings.hasApiKey}
+              required={isOpenRouter && !hasSavedApiKey}
             />
           </Field>
 
-          <Field
-            label="Reasoning effort"
-            htmlFor="ai-reasoning-effort"
-            help={reasoningHelp({
-              loaded: Boolean(loadedReasoning),
-              error: reasoningQuery.error ? errorMessage(reasoningQuery.error) : null,
-              adjustable: supportedEfforts.length > 0,
-            })}
-          >
-            <Select
-              value={effort || MODEL_DEFAULT}
-              onValueChange={(value) => setReasoningEffort(value === MODEL_DEFAULT ? "" : value)}
-              disabled={!supportedEfforts.length && !effort}
+          {isOpenRouter ? (
+            <Field
+              label="Reasoning effort"
+              htmlFor="ai-reasoning-effort"
+              help={reasoningHelp({
+                loaded: Boolean(loadedReasoning),
+                error: reasoningQuery.error ? errorMessage(reasoningQuery.error) : null,
+                adjustable: supportedEfforts.length > 0,
+              })}
             >
-              <SelectTrigger id="ai-reasoning-effort">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={MODEL_DEFAULT}>
-                  {defaultEffort
-                    ? `Model default (${effortLabel(defaultEffort)})`
-                    : "Model default"}
-                </SelectItem>
-                {supportedEfforts.map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {effortLabel(value)}
+              <Select
+                value={effort || MODEL_DEFAULT}
+                onValueChange={(value) => setReasoningEffort(value === MODEL_DEFAULT ? "" : value)}
+                disabled={!supportedEfforts.length && !effort}
+              >
+                <SelectTrigger id="ai-reasoning-effort">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={MODEL_DEFAULT}>
+                    {defaultEffort
+                      ? `Model default (${effortLabel(defaultEffort)})`
+                      : "Model default"}
                   </SelectItem>
-                ))}
-                {effort && !supportedEfforts.includes(effort) ? (
-                  <SelectItem value={effort}>{effortLabel(effort)}</SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
-          </Field>
+                  {supportedEfforts.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {effortLabel(value)}
+                    </SelectItem>
+                  ))}
+                  {effort && !supportedEfforts.includes(effort) ? (
+                    <SelectItem value={effort}>{effortLabel(effort)}</SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+            </Field>
+          ) : null}
         </div>
 
         <div className="border-t border-base-300 pt-5">
@@ -258,13 +292,17 @@ function AISettingsForm({ settings }: { settings: AISettings }) {
             <Field
               label="Decision model ID"
               htmlFor="ai-decision-model"
-              help="An OpenRouter decision model. Leave blank for typesafe/jev-1.13."
+              help={
+                isOpenRouter
+                  ? "An OpenRouter decision model. Leave blank for typesafe/jev-1.13."
+                  : "Optional model ID on this API server. Leave blank to use the selected model."
+              }
             >
               <Input
                 id="ai-decision-model"
                 value={decisionModel}
                 onChange={(event) => setDecisionModel(event.target.value)}
-                placeholder="typesafe/jev-1.13"
+                placeholder={isOpenRouter ? "typesafe/jev-1.13" : model || "Model ID"}
                 autoComplete="off"
               />
             </Field>
@@ -282,7 +320,9 @@ function AISettingsForm({ settings }: { settings: AISettings }) {
               type="button"
               variant="outline"
               onClick={refreshAll}
-              disabled={!settings.hasApiKey || !settings.model || refreshMutation.loading}
+              disabled={
+                (isOpenRouter && !settings.hasApiKey) || !settings.model || refreshMutation.loading
+              }
               className="disabled:opacity-60"
             >
               <RefreshCw className="h-4 w-4" aria-hidden="true" />

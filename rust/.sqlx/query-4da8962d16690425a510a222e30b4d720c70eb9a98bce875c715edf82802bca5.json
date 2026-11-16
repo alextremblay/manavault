@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT provider, api_key, model, deck_analysis_instructions, decision_model,\n           reasoning_effort\n         FROM ai_settings WHERE id = ?1",
+  "query": "SELECT provider, api_key, api_base_url, model, deck_analysis_instructions, decision_model,\n           reasoning_effort\n         FROM ai_settings WHERE id = ?1",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "model",
+        "name": "api_base_url",
         "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ai_settings",
+            "name": "api_base_url"
+          }
+        }
+      },
+      {
+        "name": "model",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "deck_analysis_instructions",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "decision_model",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "reasoning_effort",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -79,8 +90,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "0285e0819fe27638b939aa544b95b7162d2c7fb6000bb5c52b2ca62189223975"
+  "hash": "4da8962d16690425a510a222e30b4d720c70eb9a98bce875c715edf82802bca5"
 }

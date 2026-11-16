@@ -26,8 +26,8 @@ vi.mock("@apollo/client/react", () => ({
         ...base,
         data: {
           aiSettings: apolloMocks.configured
-            ? { hasApiKey: true, model: "anthropic/claude-sonnet-4" }
-            : { hasApiKey: false, model: null },
+            ? { provider: "openrouter", hasApiKey: true, model: "anthropic/claude-sonnet-4" }
+            : { provider: "openrouter", hasApiKey: false, model: null },
         },
       }
     }

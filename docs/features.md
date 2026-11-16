@@ -470,13 +470,16 @@ history.
 
 ## AI Deck Insights
 
-AI features are optional and currently use OpenRouter. The owner configures and
-validates an API key and model ID in **Settings -> AI**, and can add custom
-analysis instructions; the key is encrypted at rest and is never returned
-through GraphQL. A reasoning effort setting offers only the efforts OpenRouter
-lists for the selected model, or the model's default; it applies to analyses
-and questions. Deck data is sent only when the owner explicitly runs an
-analysis, sends a question, or opens a deck grouped by **AI Tag**.
+AI features are optional and support OpenRouter or an OpenAI-compatible API
+server. In **Settings -> AI**, the owner selects a provider and model; the key
+is encrypted at rest and never returned through GraphQL. OpenRouter requires
+an API key and provides model-specific reasoning-effort options. An
+OpenAI-compatible server uses its configured API base URL (for example,
+`http://localhost:1234/v1`); its API key is optional and its `/models` endpoint
+must list the selected model. The server must be reachable from ManaVault's
+backend process. In Docker, `localhost` refers to the container, not the host.
+Deck data is sent only when the owner explicitly runs an analysis, sends a
+question, or opens a deck grouped by **AI Tag**.
 
 ### Deck analysis
 
@@ -501,11 +504,12 @@ Each saved-deck analysis also names the deck's own card roles, such as
 "Cast-from-exile payoffs" or "-1/-1 counter engines", with standard roles like
 Ramp and Lands. After the analysis, a decision model sorts every non-commander
 card into one of those roles, or Other, with the commander as context. It uses
-the same OpenRouter key and defaults to Jev (`typesafe/jev-1.13`); change it
-under **Settings -> AI -> AI tags**, where saving checks the model with one
-small request. Decks with roles open grouped by **AI Tag**, the first grouping
-option; decks without them do not offer it. Assignments are saved, so only cards added since the last assignment
-are sent; a new analysis or commander reassigns the deck.
+the same OpenRouter key and defaults to Jev (`typesafe/jev-1.13`); an
+OpenAI-compatible server defaults to its selected model. Change the decision
+model under **Settings -> AI -> AI tags**. The compatible API must support chat
+completions with JSON-object responses. Decks with roles open grouped by **AI
+Tag**, the first grouping option; assignments are saved, so only cards added
+since the last assignment are sent. A new analysis or commander reassigns the deck.
 
 ### Commander brackets
 
@@ -545,14 +549,13 @@ active decks, or does not own it. The prompts tell the model to prefer cards
 with a free copy when they fit comparably well, treat copies in other decks the
 same as unowned cards, and still suggest cards without a free copy when they are
 clearly better. Answers say which additions the owner has a free copy of; deck
-analysis uses collection status only to choose cards and does not label them. Models whose OpenRouter
-endpoints lack tool support fall back to answering without tools.
+analysis uses collection status only to choose cards and does not label them.
+Models whose endpoints lack tool support fall back to answering without tools.
 
-Requests are shaped for OpenRouter prompt caching: the system prompt and the
-decklist come first and are marked as cache breakpoints, and every request in
-one conversation shares a session so follow-ups reach the provider holding the
-cache. The server log records cached and cache-write prompt tokens for each
-request.
+Compatible API servers must implement `/v1/models` and `/v1/chat/completions`,
+including tool calls and JSON-schema responses, for the complete analysis and
+question experience. OpenRouter requests use its prompt-caching metadata;
+compatible server requests omit those OpenRouter-specific fields.
 
 ## Trade
 
@@ -655,7 +658,7 @@ The Settings page groups owner configuration:
   account (the card size slider in the app shell adjusts card images across
   the app)
 - **Pricing** - price source and vendor sync
-- **AI** - OpenRouter key, model, reasoning effort, and custom instructions
+- **AI** - OpenRouter or compatible API base URL, model, optional key, and custom instructions
 - **Personal API keys** - read-only keys for integrations; see [api.md](api.md)
 - **Collection auto-sort** and **Default Deck Tags**
 - **Scryfall data** - force a Scryfall catalog or symbol/set icon reload

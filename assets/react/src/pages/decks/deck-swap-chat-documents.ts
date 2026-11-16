@@ -38,6 +38,7 @@ export const AskDeckSwapQuestionDocument = graphql(`
 export const DeckSwapAiSettingsDocument = graphql(`
   query DeckSwapAiSettings {
     aiSettings {
+      provider
       hasApiKey
       model
     }

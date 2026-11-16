@@ -31,6 +31,7 @@ test("loads and saves custom deck analysis instructions", async () => {
   const updatedInstructions = `${existingInstructions} Add a budget upgrades section.`
   const settings = {
     provider: "openrouter",
+    apiBaseUrl: null,
     model: "anthropic/claude-sonnet-4",
     deckAnalysisInstructions: existingInstructions,
     decisionModel: "typesafe/jev-1.13",
@@ -53,6 +54,7 @@ test("loads and saves custom deck analysis instructions", async () => {
         variables: {
           input: {
             provider: "openrouter",
+            apiBaseUrl: null,
             model: "anthropic/claude-sonnet-4",
             deckAnalysisInstructions: updatedInstructions,
             decisionModel: "custom/decider",
@@ -88,9 +90,72 @@ test("loads and saves custom deck analysis instructions", async () => {
   expect((instructions as HTMLTextAreaElement).value).toBe(updatedInstructions)
 })
 
+test("saves a local OpenAI-compatible server without an API key", async () => {
+  const settings = {
+    provider: "openrouter",
+    apiBaseUrl: null,
+    model: null,
+    deckAnalysisInstructions: null,
+    decisionModel: "typesafe/jev-1.13",
+    reasoningEffort: null,
+    hasApiKey: false,
+  }
+  const localSettings = {
+    ...settings,
+    provider: "openai-compatible",
+    apiBaseUrl: "http://localhost:1234/v1",
+    model: "local-model",
+    decisionModel: "local-model",
+  }
+  const link = new MockLink([
+    {
+      request: { query: AISettingsDocument },
+      result: { data: { aiSettings: settings } },
+    },
+    {
+      request: {
+        query: UpdateAISettingsDocument,
+        variables: {
+          input: {
+            provider: "openai-compatible",
+            apiBaseUrl: "http://localhost:1234/v1",
+            model: "local-model",
+            deckAnalysisInstructions: "",
+            decisionModel: "",
+            reasoningEffort: null,
+          },
+        },
+      },
+      result: { data: { updateAiSettings: { aiSettings: localSettings } } },
+    },
+  ])
+  const client = new ApolloClient({ cache: new InMemoryCache(), link })
+
+  render(
+    <ApolloProvider client={client}>
+      <ToastProvider>
+        <AISettingsSection />
+      </ToastProvider>
+    </ApolloProvider>,
+  )
+
+  await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }))
+  await userEvent.click(await screen.findByRole("option", { name: "OpenAI-compatible" }))
+  const apiBaseUrl = screen.getByRole("textbox", { name: /API base URL/ })
+  const model = screen.getByRole("textbox", { name: /Model ID/ })
+  const apiKey = screen.getByLabelText("API key (optional)")
+  expect(apiKey.hasAttribute("required")).toBe(false)
+  await userEvent.type(apiBaseUrl, "http://localhost:1234/v1")
+  await userEvent.type(model, "local-model")
+  await userEvent.click(screen.getByRole("button", { name: "Validate and save" }))
+
+  expect(await screen.findByText("AI settings validated and saved.")).toBeTruthy()
+})
+
 test("preserves dirty form values when settings refetch", async () => {
   const initialSettings = {
     provider: "openrouter",
+    apiBaseUrl: null,
     model: "anthropic/claude-sonnet-4",
     deckAnalysisInstructions: "Initial instructions",
     decisionModel: "typesafe/jev-1.13",
@@ -138,6 +203,7 @@ test("preserves dirty form values when settings refetch", async () => {
 test("queues a refresh for every deck analysis", async () => {
   const settings = {
     provider: "openrouter",
+    apiBaseUrl: null,
     model: "anthropic/claude-sonnet-4",
     deckAnalysisInstructions: "",
     decisionModel: "typesafe/jev-1.13",
@@ -176,6 +242,7 @@ test("queues a refresh for every deck analysis", async () => {
 test("offers the reasoning efforts the model supports and drops ones the next model lacks", async () => {
   const settings = {
     provider: "openrouter",
+    apiBaseUrl: null,
     model: "openai/gpt-6.1-sol",
     deckAnalysisInstructions: "",
     decisionModel: "typesafe/jev-1.13",
@@ -188,6 +255,7 @@ test("offers the reasoning efforts the model supports and drops ones the next mo
       variables: {
         input: {
           provider: "openrouter",
+          apiBaseUrl: null,
           model,
           deckAnalysisInstructions: "",
           decisionModel: "typesafe/jev-1.13",
